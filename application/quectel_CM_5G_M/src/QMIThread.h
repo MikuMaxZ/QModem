@@ -20,6 +20,7 @@
 //#define CONFIG_REG_QOS_IND
 //#define CONFIG_GET_QOS_INFO
 //#define CONFIG_GET_QOS_DATA_RATE
+#define CONFIG_FOXCONN_FCC_AUTH
 
 #if (defined(CONFIG_REG_QOS_IND) || defined(CONFIG_GET_QOS_INFO) || defined(CONFIG_GET_QOS_DATA_RATE))
 #ifndef CONFIG_REG_QOS_IND
@@ -209,6 +210,7 @@ typedef struct __PROFILE {
     char expect_adapter[32];
     int kill_pdp;
     int replication_factor;
+    int force_apn_set;  // Force APN setting even if old config matches
     //user input end
 
     char qmichannel[32];
@@ -249,7 +251,9 @@ typedef struct __PROFILE {
     char old_password[64];
     int old_auth;
     int old_iptype;
-
+#ifdef CONFIG_FOXCONN_FCC_AUTH
+    int needs_fcc_auth;  // Add this field for FCC authentication flag
+#endif
     const struct qmi_device_ops *qmi_ops;
     const struct request_ops *request_ops;
     RMNET_INFO rmnet_info;
@@ -344,7 +348,20 @@ struct request_ops {
     int (*requestRegisterQos)(PROFILE_T *profile);
     int (*requestGetQosInfo)(PROFILE_T *profile);
     int (*requestGetCoexWWANState)(void);
+#ifdef CONFIG_FOXCONN_FCC_AUTH
+    int (*requestFoxconnSetFccAuthentication)(UCHAR magic_value);
+    int (*requestFoxconnSetFccAuthenticationV2)(const char *magic_string, UCHAR magic_number);
+#endif
 };
+
+// Add structure for V2 parameters
+#ifdef CONFIG_FOXCONN_FCC_AUTH
+typedef struct {
+    char magic_string[256];
+    UCHAR magic_number;
+} FOXCONN_FCC_AUTH_V2_T;
+#endif
+
 extern const struct request_ops qmi_request_ops;
 extern const struct request_ops mbim_request_ops;
 extern const struct request_ops atc_request_ops;
@@ -373,8 +390,8 @@ extern int debug_qmi;
 extern int qmidevice_control_fd[2];
 extern int g_donot_exit_when_modem_hangup;
 extern void update_resolv_conf(int iptype, const char *ifname, const char *dns1, const char *dns2);
-void update_ipv4_address(const char *ifname, const char *ip, const char *gw, unsigned prefix, char *metric);
-void update_ipv6_address(const char *ifname, const char *ip, const char *gw, unsigned prefix, char *metric);
+void update_ipv4_address(const char *ifname, const char *ip, const char *gw, unsigned prefix, const char *metric);
+void update_ipv6_address(const char *ifname, const char *ip, const char *gw, unsigned prefix, const char *metric);
 int reattach_driver(PROFILE_T *profile);
 extern void no_trunc_strncpy(char *dest, const char *src, size_t dest_size);
 

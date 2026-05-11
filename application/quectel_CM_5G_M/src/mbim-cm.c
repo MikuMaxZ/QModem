@@ -841,6 +841,8 @@ static pthread_mutex_t mbim_command_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t mbim_command_cond = PTHREAD_COND_INITIALIZER;
 static int mbim_ms_version = 1;
 static uint8_t qmi_over_mbim_nas = 0;
+static uint8_t qmi_over_mbim_dms = 0; // Add DMS client ID
+
 int qmi_over_mbim_qmidev_send(PQCQMIMSG pQMI);
 
 static const UUID_T * str2uuid(const char *str) {
@@ -1801,6 +1803,16 @@ static int mbim_device_caps_query(PROFILE_T *profile) {
             wchar2char((const char *)pInfo + le32toh(pInfo->FirmwareInfoOffset), le32toh(pInfo->FirmwareInfoSize), tmp, sizeof(tmp));
             strncpy(profile->BaseBandVersion, tmp, sizeof(profile->BaseBandVersion));
             mbim_debug("FirmwareInfo: %s", tmp);
+#ifdef CONFIG_FOXCONN_FCC_AUTH
+            // Check if this modem model needs FCC authentication
+            if (strstr(profile->BaseBandVersion, "T99W175")) {
+                profile->needs_fcc_auth = 1;
+                mbim_debug("Modem model %s requires FCC authentication", profile->BaseBandVersion);
+            } else {
+                profile->needs_fcc_auth = 0;
+                mbim_debug("Modem model %s does not require FCC authentication", profile->BaseBandVersion);
+            }
+#endif
          }
          if (le32toh(pInfo->HardwareInfoOffset) && le32toh(pInfo->HardwareInfoSize)) {
             wchar2char((const char *)pInfo + le32toh(pInfo->HardwareInfoOffset), le32toh(pInfo->HardwareInfoSize), tmp, sizeof(tmp));
@@ -2187,6 +2199,11 @@ static int mbim_init(PROFILE_T *profile) {
 #ifdef CONFIG_CELLINFO //by now, only this function need QMI OVER MBIM
             qmi_over_mbim_nas = qmi_over_mbim_get_client_id(QMUX_TYPE_NAS);
 #endif
+#ifdef CONFIG_FOXCONN_FCC_AUTH
+            // Get DMS client ID for FCC authentication
+            qmi_over_mbim_dms = qmi_over_mbim_get_client_id(QMUX_TYPE_DMS);
+            mbim_debug("Got DMS client ID: %d for FCC authentication", qmi_over_mbim_dms);
+#endif
         }
     }
 
@@ -2201,7 +2218,12 @@ static int mbim_deinit(void) {
         qmi_over_mbim_release_client_id(QMUX_TYPE_NAS, qmi_over_mbim_nas);
         qmi_over_mbim_nas = 0;
     }
-    
+#ifdef CONFIG_FOXCONN_FCC_AUTH
+    if (qmi_over_mbim_dms) {
+        qmi_over_mbim_release_client_id(QMUX_TYPE_DMS, qmi_over_mbim_dms);
+        qmi_over_mbim_dms = 0;
+    }
+#endif    
     mbim_close_device();
 
     if (qmi_over_mbim_sk[0] != -1) {
@@ -2291,11 +2313,166 @@ exit:
     return retval;
 }
 
+#include <json-c/json.h>
+static int mbim_get_imsi(char *imsi_buf, size_t buf_len) {
+    MBIM_MESSAGE_HEADER *pRequest = NULL;
+    MBIM_COMMAND_DONE_T *pCmdDone = NULL;
+    int err;
+
+    // Clear the output buffer first
+    if (buf_len > 0) {
+        imsi_buf[0] = '\0';
+    }
+
+    mbim_debug("%s()", __func__);
+
+    pRequest = compose_basic_connect_command(MBIM_CID_SUBSCRIBER_READY_STATUS, MBIM_CID_CMD_TYPE_QUERY, NULL, 0);
+    if (!pRequest) {
+        return -ENOMEM;
+    }
+
+    err = mbim_send_command(pRequest, &pCmdDone, mbim_default_timeout);
+
+    if (err || !pCmdDone || le32toh(pCmdDone->Status) != MBIM_STATUS_SUCCESS) {
+        mbim_debug("%s failed: send_command err=%d, response status=%d\n", __func__, err, 
+                   pCmdDone ? le32toh(pCmdDone->Status) : -1);
+        mbim_free(pRequest);
+        mbim_free(pCmdDone);
+        return (err != 0) ? err : -1;
+    }
+
+    if (le32toh(pCmdDone->InformationBufferLength)) {
+         MBIM_SUBSCRIBER_READY_STATUS_T *pInfo = (MBIM_SUBSCRIBER_READY_STATUS_T *)pCmdDone->InformationBuffer;
+
+         if (le32toh(pInfo->SubscriberIdSize) > 0) {
+            wchar2char((const char *)pInfo + le32toh(pInfo->SubscriberIdOffset),
+                       le32toh(pInfo->SubscriberIdSize),
+                       imsi_buf,
+                       buf_len);
+            mbim_debug("IMSI successfully retrieved: %s", imsi_buf);
+         }
+    }
+
+    mbim_free(pRequest);
+    mbim_free(pCmdDone);
+    if (imsi_buf[0] == '\0') {
+        return -1;
+    }
+
+    return 0;
+}
+
+static int GetAPNConfig(PROFILE_T *profile, const char *json_path)
+{
+    mbim_debug("GetAPNConfig");    
+    if (!json_path) return -1;
+    
+    char imsi[32];
+    int result = mbim_get_imsi(imsi, sizeof(imsi));
+    if (result != 0) {
+        mbim_debug("Failed to retrieve IMSI. Error code: %d", result);
+        return -1;
+    }
+    mbim_debug("Successfully retrieved IMSI: %s", imsi);
+    char sim_mcc[4] = {0};
+    char sim_mnc3[4] = {0};
+    char sim_mnc2[3] = {0};
+
+    strncpy(sim_mcc, imsi, 3);
+    strncpy(sim_mnc3, imsi + 3, 3);
+    strncpy(sim_mnc2, imsi + 3, 2);
+
+    FILE *fp = fopen(json_path, "r");
+    if (!fp) {
+        mbim_debug("Failed to open JSON file: %s", json_path);
+        return -1;
+    }
+
+    fseek(fp, 0, SEEK_END);
+    long size = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+
+    char *buffer = malloc(size + 1);
+    if (!buffer) { fclose(fp); return -1; }
+
+    fread(buffer, 1, size, fp);
+    buffer[size] = 0;
+    fclose(fp);
+
+    json_object *root = json_tokener_parse(buffer);
+    free(buffer);
+    if (!root) return -1;
+
+    json_object *apns_obj;
+    if (!json_object_object_get_ex(root, "apns", &apns_obj)) { json_object_put(root); return -1; }
+
+    json_object *apn_array;
+    if (!json_object_object_get_ex(apns_obj, "apn", &apn_array)) { json_object_put(root); return -1; }
+
+    int array_len = json_object_array_length(apn_array);
+    json_object *best_entry = NULL;
+
+    for (int i = 0; i < array_len; i++) {
+        json_object *entry = json_object_array_get_idx(apn_array, i);
+        const char *mcc = json_object_get_string(json_object_object_get(entry, "_mcc"));
+        const char *mnc = json_object_get_string(json_object_object_get(entry, "_mnc"));
+        const char *type = json_object_get_string(json_object_object_get(entry, "_type"));
+
+        if (!mcc || !mnc || !type) continue;
+
+        if (strcmp(mcc, sim_mcc) == 0 && strcmp(mnc, sim_mnc3) == 0 &&
+            strstr(type, "default")) {
+            best_entry = entry;
+            break;
+        }
+    }
+    if (!best_entry) {
+        for (int i = 0; i < array_len; i++) {
+            json_object *entry = json_object_array_get_idx(apn_array, i);
+            const char *mcc = json_object_get_string(json_object_object_get(entry, "_mcc"));
+            const char *mnc = json_object_get_string(json_object_object_get(entry, "_mnc"));
+            const char *type = json_object_get_string(json_object_object_get(entry, "_type"));
+
+            if (!mcc || !mnc || !type) continue;
+
+            if (strcmp(mcc, sim_mcc) == 0 && strlen(mnc) >= 2 &&
+                strncmp(mnc, sim_mnc2, 2) == 0 &&
+                strstr(type, "default")) {
+                best_entry = entry;
+                break;
+            }
+        }
+    }
+    if (!best_entry) {
+        mbim_debug("Failed to resolve APN");
+    }
+
+    if (best_entry) {
+        const char *apn = json_object_get_string(json_object_object_get(best_entry, "_apn"));
+        const char *user = json_object_get_string(json_object_object_get(best_entry, "_user"));
+        const char *pass = json_object_get_string(json_object_object_get(best_entry, "_password"));
+
+        if (apn && strlen(apn) > 0) profile->apn = strdup(apn);
+        if (user) profile->user = strdup(user);
+        if (pass) profile->password = strdup(pass);
+        mbim_debug("Select APN: %s",profile->apn);
+    }
+
+    json_object_put(root);
+    return 0;
+}
+
 static int requestSetupDataCall(PROFILE_T *profile, int curIpFamily) {
     int retval;
 
     (void)curIpFamily;
-
+    if (strcmp(profile->apn, "auto") == 0)
+    {
+        mbim_debug("No APN is set, start automatic selection");
+        GetAPNConfig(profile, "/usr/share/qmodem/apns.json");
+    }else {
+        mbim_debug("Use the APN set by the user");
+    }
     if (profile->apn)
         mbim_apn = profile->apn;
     if (profile->user)
@@ -2380,6 +2557,29 @@ static int requestGetCellInfoList(void) {
 }
 #endif
 
+#ifdef CONFIG_FOXCONN_FCC_AUTH
+// Use QMI over MBIM for Foxconn FCC authentication
+static int requestFoxconnSetFccAuthentication(UCHAR magic_value) {
+    if (qmi_over_mbim_support && qmi_request_ops.requestFoxconnSetFccAuthentication) {
+        mbim_debug("%s(magic_value=0x%02x) via QMI over MBIM", __func__, magic_value);
+        return qmi_request_ops.requestFoxconnSetFccAuthentication(magic_value);
+    }
+    
+    mbim_debug("%s: QMI over MBIM not available for FCC auth", __func__);
+    return -ENOTSUP;
+}
+
+static int requestFoxconnSetFccAuthenticationV2(const char *magic_string, UCHAR magic_number) {
+    if (qmi_over_mbim_support && qmi_request_ops.requestFoxconnSetFccAuthenticationV2) {
+        mbim_debug("%s(magic_string='%s', magic_number=0x%02x) via QMI over MBIM", __func__, magic_string, magic_number);
+        return qmi_request_ops.requestFoxconnSetFccAuthenticationV2(magic_string, magic_number);
+    }
+    
+    mbim_debug("%s: QMI over MBIM not available for FCC auth", __func__);
+    return -ENOTSUP;
+}
+#endif
+
 const struct request_ops mbim_request_ops = {
     .requestBaseBandVersion = requestBaseBandVersion,
     .requestGetSIMStatus = requestGetSIMStatus,
@@ -2390,6 +2590,10 @@ const struct request_ops mbim_request_ops = {
     .requestGetIPAddress = requestGetIPAddress,
 #ifdef CONFIG_CELLINFO
     .requestGetCellInfoList = requestGetCellInfoList,
+#endif
+#ifdef CONFIG_FOXCONN_FCC_AUTH
+    .requestFoxconnSetFccAuthentication = requestFoxconnSetFccAuthentication,
+    .requestFoxconnSetFccAuthenticationV2 = requestFoxconnSetFccAuthenticationV2,
 #endif
 };
 
@@ -2402,6 +2606,9 @@ int qmi_over_mbim_qmidev_send(PQCQMIMSG pQMI) {
     if (pQMI->QMIHdr.QMIType != QMUX_TYPE_CTL) {
         if (pQMI->QMIHdr.QMIType == QMUX_TYPE_NAS)
             pQMI->QMIHdr.ClientId = qmi_over_mbim_nas;
+        else if (pQMI->QMIHdr.QMIType == QMUX_TYPE_DMS)
+            pQMI->QMIHdr.ClientId = qmi_over_mbim_dms;
+
 
         if (pQMI->QMIHdr.ClientId == 0) {
             dbg_time("QMIType %d has no clientID", pQMI->QMIHdr.QMIType);

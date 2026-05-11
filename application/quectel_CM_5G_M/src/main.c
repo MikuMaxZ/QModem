@@ -252,6 +252,7 @@ static int usage(const char *progname) {
     dbg_time("-v                                     Verbose log mode, for debug purpose.");
     dbg_time("-d                                     Obtain the IP address and dns through qmi");
     dbg_time("-D                                     Do not Append DNS servers to /etc/resolv.conf");
+    dbg_time("-F                                     Force APN setting even if profile parameters match");
     dbg_time("-M metric                              Specify the metric of the default route");
     dbg_time("[Examples]");
     dbg_time("Example 1: %s ", progname);
@@ -325,6 +326,38 @@ static int qmi_main(PROFILE_T *profile)
     if (request_ops->requestSetEthMode)
         request_ops->requestSetEthMode(profile);
 
+#ifdef CONFIG_FOXCONN_FCC_AUTH
+    // Only execute FCC authentication if the modem model requires it
+    if (profile->needs_fcc_auth) {
+        dbg_time("Executing FCC authentication for modem model: %s", profile->BaseBandVersion);
+
+        // Check if the fcc auth was successful
+        char fcc_auth_success = 0;
+        if (request_ops->requestFoxconnSetFccAuthentication) {
+            // Use magic value 0x01 as seen in libqmi
+            qmierr = request_ops->requestFoxconnSetFccAuthentication(0x01);
+            if (!qmierr) {
+                dbg_time("Foxconn FCC Authentication successful");
+                fcc_auth_success = 1;
+            }
+        }
+        if(fcc_auth_success != 1) {
+            if (request_ops->requestFoxconnSetFccAuthenticationV2) {
+                // Based on libqmi, use "FOXCONN" as magic string for Foxconn modems
+                const char *magic_string = "FOXCONN";  // Correct magic string for Foxconn
+                UCHAR magic_number = 0x01;  // Standard magic number from libqmi
+                
+                qmierr = request_ops->requestFoxconnSetFccAuthenticationV2(magic_string, magic_number);
+                if (!qmierr) {
+                    dbg_time("Foxconn FCC Authentication V2 successful");
+                }
+      
+            }
+        }
+    } else {
+        dbg_time("Skipping FCC authentication - not required for this modem model");
+    }
+#endif
     if (request_ops->requestSetLoopBackState && profile->loopback_state) {
     	qmierr = request_ops->requestSetLoopBackState(profile->loopback_state, profile->replication_factor);
     	if (qmierr != QMI_ERR_INVALID_QMI_CMD) //X20 return this error 
@@ -777,6 +810,7 @@ static int parse_user_input(int argc, char **argv, PROFILE_T *profile) {
 
     profile->pdp = CONFIG_DEFAULT_PDP;
     profile->profile_index = CONFIG_DEFAULT_PDP;
+    profile->force_apn_set = 0;  // Default: use normal APN comparison check
 
     if (!strcmp(argv[argc-1], "&"))
         argc--;
@@ -920,6 +954,10 @@ static int parse_user_input(int argc, char **argv, PROFILE_T *profile) {
             
             case 'D':
                 profile->no_dns = 1;
+            break;
+
+            case 'F':
+                profile->force_apn_set = 1;
             break;
 
             default:

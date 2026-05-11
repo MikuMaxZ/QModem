@@ -1,10 +1,15 @@
 return {
     manufacturers = {
+        gosuncn = "GosunCN",
         quectel = "Quectel",
         simcom = "Simcom",
         sierra = "Sierra Wireless",
         fibocom = "Fibocom",
-        meig = "Meig"
+        meig = "Meig",
+        huawei = "Huawei",
+        neoway = "Neoway",
+        telit = "Telit",
+        nk = "Tom's Love",
     },
     platforms = {
         lte = "LTE",

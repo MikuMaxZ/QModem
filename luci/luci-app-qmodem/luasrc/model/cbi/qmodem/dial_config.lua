@@ -26,8 +26,13 @@ alias.rmempty = true
 at_port = s:taboption("general",Value, "at_port", translate("AT Port"))
 sms_at_port = s:taboption("general",Value, "sms_at_port", translate("SMS AT Port"))
 sms_at_port.rmempty = true
+override_at_port = s:taboption("general", Value, "override_at_port", translate("Override AT Port"))
+override_at_port.rmempty = true
 valid_at_ports = uci:get("qmodem",arg[1],"valid_at_ports")
 avalible_ports = uci:get("qmodem",arg[1],"ports")
+
+
+
 
 dns_list = s:taboption("general", DynamicList, "dns_list", translate("DNS"))
 dns_list.description = translate("If the DNS server is not set, it will use the DNS server leased by the operator.")
@@ -52,14 +57,35 @@ for i1,v1 in ipairs(avalible_ports) do
     end
 	at_port:value(v1,msg)
     sms_at_port:value(v1,msg)
+    override_at_port:value(v1,msg)
 end
+
+use_ubus = s:taboption("general",Flag, "use_ubus",translate("Use Ubus"))
+use_ubus.default = "0"
 
 at_port.placeholder = translate("Not null")
 at_port.rmempty = false
 
+force_set_apn = s:taboption("advanced", Flag, "force_set_apn", translate("Force Set APN"))
+force_set_apn.description = translate("If enabled, the APN will be set even if it matches the current configuration.(only works with tom modified version of quectel-cm)")
+force_set_apn.default = "0"
+
+donot_nat = s:taboption("advanced", Flag, "donot_nat", translate("Do Not NAT(Only for Quectel Modem)"))
+donot_nat.description = translate("If enabled, will turn off NAT function on quectel modem.")
+donot_nat.default = "0"
+
 bridge_mode = s:taboption("advanced", Flag, "en_bridge", translate("Bridge Mode"))
 bridge_mode.description = translate("Caution: Only avalible for quectel sdx 5G Modem.")
 bridge_mode.default = "0"
+
+bridge_port = s:taboption("advanced", Value, "bridge_port", translate("Bridge Port"))
+bridge_port.description = translate("Device-level bridge port for passthrough. If set, it overrides the slot default bridge port.")
+bridge_port.rmempty = true
+local bridge_ports = io.popen("ls /sys/class/net/")
+for line in bridge_ports:lines() do
+    bridge_port:value(line, line)
+end
+bridge_ports:close()
 
 do_not_add_dns = s:taboption("advanced", Flag, "do_not_add_dns", translate("Do Not modify resolv.conf"))
 do_not_add_dns.description = translate("quectel-CM will append the DNS server to the resolv.conf file by default.if you do not want to modify the resolv.conf file, please check this option.")
@@ -78,10 +104,8 @@ soft_reboot = s:taboption("advanced", Flag, "soft_reboot", translate("Soft Reboo
 soft_reboot.description = translate("enable modem soft reboot")
 soft_reboot.default = "0"
 
--- 350 v4/v6存活检查
-mtk_check = s:taboption("advanced", Flag, "mtk_check", translate("MTK V4/V6 Check"))
-mtk_check.description = translate("Only for Fibocom MTK modem.")
-mtk_check.default = "0"
+-- pdp_index
+pdp_index = s:taboption("advanced", Value, "pdp_index", translate("PDP Context Index"))
 
 -- 网络类型
 pdp_type= s:taboption("advanced", ListValue, "pdp_type", translate("PDP Type"))
@@ -97,17 +121,56 @@ apn = s:taboption("advanced", Value, "apn", translate("APN"))
 apn.default = ""
 apn.rmempty = true
 apn:value("", translate("Auto Choose"))
-apn:value("cmnet", translate("China Mobile"))
-apn:value("3gnet", translate("China Unicom"))
-apn:value("ctnet", translate("China Telecom"))
-apn:value("cbnet", translate("China Broadcast"))
-apn:value("5gscuiot", translate("Skytone"))
+apn:value("cmnet", translate("China Mobile (CN)"))
+apn:value("3gnet", translate("China Unicom (CN)"))
+apn:value("ctnet", translate("China Telecom (CN)"))
+apn:value("cbnet", translate("China Broadcast (CN)"))
+apn:value("5gscuiot", translate("Skytone (CN)"))
+
+-- Switzerland (CH)
+apn:value("gprs.swisscom.ch", translate("Swisscom (CH)"))
+apn:value("internet", "Salt (CH), Sunrise (CH), O2 (DE), 1&1 (DE)")
+
+-- Germany (DE)
+apn:value("web.vodafone.de", translate("Vodafone (DE)"))
+apn:value("internet.telekom", translate("Telekom (DE)"))
+apn:value("internet.eplus.de", translate("E-Plus (DE)"))
+
+-- Austria (AT)
+apn:value("A1.net", translate("A1 (AT)"))
+apn:value("drei.at", translate("Drei (AT)"))
+apn:value("internet.t-mobile.at", translate("Magenta (AT)"))
+
+-- Philippines (PH)
+apn:value("http.globe.com.ph", translate("Globe Prepaid (PH)"))
+apn:value("internet.globe.com.ph", translate("Globe Postpaid (PH)"))
+apn:value("internet", translate("Smart Communications (PH)"))
+apn:value("internet.dito.ph", translate("Dito Telecomunity (PH)"))
+
+-- Malaysia (MY)
+apn:value("celcom3g", translate("Celcom (MY)"))
+apn:value("diginet", translate("DiGi (MY)"))
+apn:value("unet", translate("Maxis | Hotlink (MY)"))
+apn:value("hos", translate("Maxis UT (MY)"))
+apn:value("yes4g", translate("YES (MY)"))
+apn:value("my3g", translate("UMobile (MY)"))
+apn:value("unifi", translate("Unifi (MY)"))
+
+-- Russia (RU)
+apn:value("internet.beeline.ru", translate("Beeline (RU)"))
+apn:value("internet.mts.ru", translate("MTS (RU)"))
+apn:value("internet", translate("Megafon (RU)"))
+apn:value("internet.tele2.ru", translate("Tele2 (RU)"))
+apn:value("internet.yota", translate("Yota (RU)"))
+apn:value("m.tinkoff", translate("T-mobile (RU)"))
+apn:value("internet.rtk.ru", translate("Rostelecom (RU)"))
+apn:value("internet.sberbank-tele.com", translate("Sber Mobile (RU)"))
 
 auth = s:taboption("advanced", ListValue, "auth", translate("Authentication Type"))
 auth.default = "none"
 auth.rmempty = false
 auth:value("none", translate("NONE"))
-auth:value("both", translate("PAP/CHAP (both)"))
+auth:value("MsChapV2", translate("MsChapV2"))
 auth:value("pap", "PAP")
 auth:value("chap", "CHAP")
 
@@ -129,39 +192,54 @@ pincode.description = translate("If the PIN code is not set, leave it blank.")
 
 --卡2
 apn = s:taboption("advanced", Value, "apn2", translate("APN").." 2")
-apn.description = translate("If solt 2 config is not set,will use slot 1 config.")
+apn.description = translate("If slot 2 config is not set,will use slot 1 config.")
 apn.default = ""
 apn.rmempty = true
 apn:value("", translate("Auto Choose"))
-apn:value("cmnet", translate("China Mobile"))
-apn:value("3gnet", translate("China Unicom"))
-apn:value("ctnet", translate("China Telecom"))
-apn:value("cbnet", translate("China Broadcast"))
-apn:value("5gscuiot", translate("Skytone"))
+apn:value("cmnet", translate("China Mobile (CN)"))
+apn:value("3gnet", translate("China Unicom (CN)"))
+apn:value("ctnet", translate("China Telecom (CN)"))
+apn:value("cbnet", translate("China Broadcast (CN)"))
+apn:value("5gscuiot", translate("Skytone (CN)"))
 
-auth = s:taboption("advanced", ListValue, "auth2", translate("Authentication Type").. " 2")
-auth.default = "none"
-auth.rmempty = false
-auth:value("none", translate("NONE"))
-auth:value("both", translate("PAP/CHAP (both)"))
-auth:value("pap", "PAP")
-auth:value("chap", "CHAP")
+-- Switzerland (CH)
+apn:value("gprs.swisscom.ch", translate("Swisscom (CH)"))
+apn:value("internet", "Salt (CH), Sunrise (CH), O2 (DE), 1&1 (DE)")
 
-username = s:taboption("advanced", Value, "username2", translate("PAP/CHAP Username").. " 2")
-username.rmempty = true
-username:depends("auth2", "both")
-username:depends("auth2", "pap")
-username:depends("auth2", "chap")
+-- Germany (DE)
+apn:value("web.vodafone.de", translate("Vodafone (DE)"))
+apn:value("internet.telekom", translate("Telekom (DE)"))
+apn:value("internet.eplus.de", translate("E-Plus (DE)"))
 
-password = s:taboption("advanced", Value, "password2", translate("PAP/CHAP Password").. " 2")
-password.rmempty = true
-password.password = true
-password:depends("auth2", "both")
-password:depends("auth2", "pap")
-password:depends("auth2", "chap")
+-- Austria (AT)
+apn:value("A1.net", translate("A1 (AT)"))
+apn:value("drei.at", translate("Drei (AT)"))
+apn:value("internet.t-mobile.at", translate("Magenta (AT)"))
 
-pincode = s:taboption("advanced", Value, "pincode2", translate("PIN Code").. " 2")
-pincode.description = translate("If the PIN code is not set, leave it blank.")
+-- Philippines (PH)
+apn:value("http.globe.com.ph", translate("Globe Prepaid (PH)"))
+apn:value("internet.globe.com.ph", translate("Globe Postpaid (PH)"))
+apn:value("internet", translate("Smart Communications (PH)"))
+apn:value("internet.dito.ph", translate("Dito Telecomunity (PH)"))
+
+-- Malaysia (MY)
+apn:value("celcom3g", translate("Celcom (MY)"))
+apn:value("diginet", translate("DiGi (MY)"))
+apn:value("unet", translate("Maxis | Hotlink (MY)"))
+apn:value("hos", translate("Maxis UT (MY)"))
+apn:value("yes4g", translate("YES (MY)"))
+apn:value("my3g", translate("UMobile (MY)"))
+apn:value("unifi", translate("Unifi (MY)"))
+
+-- Russia (RU)
+apn:value("internet.beeline.ru", translate("Beeline (RU)"))
+apn:value("internet.mts.ru", translate("MTS (RU)"))
+apn:value("internet", translate("Megafon (RU)"))
+apn:value("internet.tele2.ru", translate("Tele2 (RU)"))
+apn:value("internet.yota", translate("Yota (RU)"))
+apn:value("m.tinkoff", translate("T-mobile (RU)"))
+apn:value("internet.rtk.ru", translate("Rostelecom (RU)"))
+apn:value("internet.sberbank-tele.com", translate("Sber Mobile (RU)"))
 
 metric = s:taboption("advanced", Value, "metric", translate("Metric"))
 metric.description = translate("The metric value is used to determine the priority of the route. The smaller the value, the higher the priority. Cannot duplicate.")
